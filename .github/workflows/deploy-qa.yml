@@ -1,0 +1,181 @@
+name: Deploy QA
+
+# Dispatched by the Release Agent only after a human approved gate F.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: false
+        default: qa
+      story_key:
+        description: Jira story key being promoted
+        required: false
+        default: ''
+      correlation_id:
+        description: Orchestrator correlation ID
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-qa
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: |
+          npm ci || (npm install --package-lock-only --no-audit --no-fund && npm ci)
+          dotnet restore
+
+      # The bundle is part of the artifact, so it is built before the service
+      # is tested or published. Publishing first would package a wwwroot that
+      # is empty, and the deployment would serve an API with no UI.
+      - name: Build frontend
+        run: npx vite build
+
+      - name: Run test suite before packaging
+        run: |
+          npm run test:unit
+          npm run test:integration
+          dotnet test --configuration Release --filter "Category!=Smoke"
+
+      - name: Publish
+        run: >
+          dotnet publish src/PilotService/PilotService.csproj
+          --configuration Release --no-restore --output publish
+
+      - name: Package artifact
+        run: |
+          mkdir -p artifact
+          tar -czf artifact/app-${{ github.sha }}.tar.gz publish
+          sha256sum artifact/app-${{ github.sha }}.tar.gz > artifact/app-${{ github.sha }}.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-qa-${{ github.sha }}
+          path: artifact/
+
+  deploy:
+    name: Deploy to QA
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-qa-${{ github.sha }}
+          path: artifact
+
+      - name: Verify artifact integrity
+        run: sha256sum -c artifact/app-${{ github.sha }}.sha256
+
+      - name: Unpack build output
+        run: tar -xzf artifact/app-${{ github.sha }}.tar.gz
+
+      - name: Deploy
+        env:
+          DEPLOY_TARGET: ${{ vars.QA_DEPLOY_TARGET }}
+          DEPLOY_TOKEN: ${{ secrets.QA_DEPLOY_TOKEN }}
+        run: ./scripts/deploy.sh qa "${{ github.sha }}"
+
+  verify:
+    name: Post-deploy smoke checks
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Fail if there is no URL to smoke test
+        env:
+          BASE_URL: ${{ vars.QA_BASE_URL }}
+        run: |
+          if [ -z "$BASE_URL" ]; then
+            echo "QA_BASE_URL is not set, so every smoke check would skip and"
+            echo "the run would report success against nothing. Set it on the"
+            echo "qa environment before promoting."
+            exit 1
+          fi
+
+      - name: Smoke tests against QA
+        env:
+          BASE_URL: ${{ vars.QA_BASE_URL }}
+        run: >
+          dotnet test --filter Category=Smoke
+          --logger "trx;LogFileName=smoke-qa.trx" --results-directory reports
+
+      # Both layers are checked against the deployment, because a service that
+      # answers /health while serving no page is still a failed promotion.
+      - name: Frontend smoke tests against QA
+        env:
+          BASE_URL: ${{ vars.QA_BASE_URL }}
+        run: |
+          npm ci || (npm install --package-lock-only --no-audit --no-fund && npm ci)
+          npm run test:smoke
+
+      - name: Publish QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-evidence-${{ github.run_id }}
+          path: reports/
+
+      - name: Trace
+        if: always()
+        run: |
+          echo "Environment: qa"
+          echo "Story: ${{ inputs.story_key }}"
+          echo "Correlation ID: ${{ inputs.correlation_id }}"
+          echo "Commit: ${{ github.sha }}"
+
+  rollback-readiness:
+    name: Record rollback point
+    needs: verify
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Capture previous release SHA
+        run: |
+          PREVIOUS=$(git rev-parse HEAD~1 || echo "none")
+          echo "Rollback target: $PREVIOUS" | tee rollback.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rollback-${{ github.run_id }}
+          path: rollback.txt

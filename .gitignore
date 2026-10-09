@@ -1,0 +1,21 @@
+bin/
+obj/
+publish/
+artifact/
+reports/
+*.user
+.vs/
+.env
+.env.*
+!.env.example
+
+# Frontend
+node_modules/
+# Vite builds the bundle straight into the service's static root, so it is
+# build output, not source. Committing it would let a stale bundle be deployed
+# against a newer API.
+src/PilotService/wwwroot/
+
+# The local SQLite file the default connection string points at. It is state,
+# not source, and committing it makes every checkout disagree about the data.
+data/

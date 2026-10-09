@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>PilotService</RootNamespace>
+    <AssemblyName>PilotService</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Persistence ships with the template because an agent cannot add it.
+         The conventions for this stack require EF Core with explicit
+         migrations, but the sandbox forbids writing a project file, so a
+         story that needs a database would otherwise fail to compile with no
+         way for anything downstream to fix it. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.31" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.31">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,180 @@
+name: CI
+
+# Quality gate for every pull request raised by the Coding Agent, and the suite
+# the Testing Agent dispatches by workflow_dispatch after a gate D merge.
+#
+# This stack carries two layers, so the gate runs both. They are deliberately
+# in one job rather than two: the frontend bundle is built into the service's
+# wwwroot, and the .NET integration suite asserts that the shell is served from
+# there. Split across jobs that joint would go untested, which is the failure
+# this stack exists to prevent.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      story_key:
+        description: Jira story key under test
+        required: false
+        default: ''
+      correlation_id:
+        description: Orchestrator correlation ID
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, type check, unit and integration tests
+    runs-on: ubuntu-latest
+
+    # The suite runs against a real PostgreSQL, the same engine the deployed app
+    # uses. A test that passes against a different engine proves nothing about
+    # the SQL it just ran. The health check gates the job: without it the first
+    # test can reach the port before the server accepts connections, and the
+    # failure looks like a bug in the code rather than a race in the runner.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pilot
+          POSTGRES_PASSWORD: pilot
+          POSTGRES_DB: pilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pilot -d pilot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    # Throwaway credentials for a throwaway container that is destroyed with the
+    # job. Npgsql takes a key/value connection string, not a URL, and the double
+    # underscore is how .NET configuration spells ConnectionStrings:Default.
+    env:
+      ConnectionStrings__Default: Host=localhost;Port=5432;Database=pilot_test;Username=pilot;Password=pilot
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # The agents can add a dependency to package.json but cannot regenerate
+      # package-lock.json - that means running npm, and nothing they write is
+      # ever executed on the control plane. `npm ci` refuses outright when the
+      # two disagree, so a story that needed a library died here, on every job
+      # that installs, before a line of it was compiled. The lockfile is still
+      # honoured whenever it is complete, which is the case this protects.
+      - name: Install frontend dependencies
+        run: npm ci || (npm install --package-lock-only --no-audit --no-fund && npm ci)
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Trace
+        run: |
+          echo "Story: ${{ inputs.story_key }}"
+          echo "Correlation ID: ${{ inputs.correlation_id }}"
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Lint backend
+        run: dotnet format --verify-no-changes --no-restore
+
+      # TypeScript is the only thing that compiles the frontend, so a suite
+      # that runs without a type check can pass over code that could never
+      # build. It runs before the tests for that reason.
+      - name: Type check frontend
+        run: npm run typecheck
+
+      # Before the .NET build, because the bundle lands in the service's
+      # wwwroot and the integration suite reads it from there.
+      - name: Build frontend
+        run: npx vite build
+
+      # Directory.Build.props turns warnings into errors, so the build is the
+      # type check: a pull request that only compiles with warnings does not
+      # reach a human.
+      - name: Build backend
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Frontend unit tests
+        run: npm run test:unit
+
+      - name: Frontend integration tests
+        run: npm run test:integration
+
+      - name: Backend unit tests
+        run: >
+          dotnet test --no-build --configuration Release --filter Category=Unit
+          --logger "trx;LogFileName=unit.trx" --results-directory reports
+
+      - name: Backend integration tests
+        run: >
+          dotnet test --no-build --configuration Release --filter Category=Integration
+          --logger "trx;LogFileName=integration.trx" --results-directory reports
+
+      - name: Publish test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_id }}
+          path: reports/
+
+  security:
+    name: Dependency and secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # npm audit and `dotnet list --vulnerable` rather than
+      # actions/dependency-review-action: dependency review needs GitHub
+      # Advanced Security to run against a private repository, so on this
+      # organisation's plan it failed every pull request no matter what the
+      # dependencies actually were.
+      - name: Frontend dependency audit
+        run: |
+          npm ci || (npm install --package-lock-only --no-audit --no-fund && npm ci)
+          npm audit --audit-level=high
+
+      # It reports findings on stdout and still exits 0, so the output has to
+      # be inspected or a vulnerable build would pass.
+      - name: Backend dependency audit
+        run: |
+          dotnet restore
+          dotnet list package --vulnerable --include-transitive 2>&1 | tee audit.log
+          if grep -q "has the following vulnerable packages" audit.log; then
+            echo "Vulnerable packages found - see the listing above."
+            exit 1
+          fi
+
+      # The gitleaks CLI is MIT-licensed and free to run anywhere. Its Action
+      # wrapper is not: gitleaks-action@v2 refuses to start on an
+      # organisation-owned repository unless a paid GITLEAKS_LICENSE is set.
+      # Same scanner, same rules, without the entitlement.
+      - name: Secret scan
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source /repo --redact --no-banner

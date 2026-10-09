@@ -1,0 +1,7 @@
+# Shell scripts run on Linux runners: CRLF would make bash fail on the shebang.
+* text=auto eol=lf
+*.sh text eol=lf
+*.sln text eol=crlf
+*.png binary
+*.jpg binary
+*.ico binary
