@@ -23,9 +23,9 @@ export default function App(): ReactElement {
   return (
     <div className="app-shell">
       <header className="app-header">
-        <Link className="app-header__title" to="/">
-          Expense claim portal
-        </Link>
+        <h1 className="app-header__title">
+          <Link to="/">Expense claim portal</Link>
+        </h1>
         <UserSwitcher />
       </header>
       <main className="app-main">
