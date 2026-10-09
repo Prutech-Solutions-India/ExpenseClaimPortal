@@ -1,11 +1,15 @@
 /**
  * The design-system primitives.
  *
- * Every screen builds from these, so loading, empty and error look the same
- * wherever they appear and an accessibility fix lands once rather than in each
- * copy. They are presentational only: no fetching, no routing, no state beyond
- * what the DOM already holds. Styling lives in `src/web/styles.css` behind the
- * `ds-` prefix - there is no CSS framework and no CSS-in-JS here.
+ * Presentational only: nothing in this module fetches, stores or decides
+ * anything. One place owns what a button, a field, a banner, a spinner and an
+ * empty state look like, so two screens cannot quietly disagree about how the
+ * same state is shown - and a state that has no primitive is a state nobody
+ * styled.
+ *
+ * Every element here carries its semantics itself (a `<button>` with an
+ * explicit `type`, a `<label>` bound to its control, `role="status"` on the
+ * spinner) rather than relying on a lint rule or a reviewer to notice.
  */
 
 import type {
@@ -15,26 +19,24 @@ import type {
   SelectHTMLAttributes,
 } from 'react';
 
-/** Joins class names, dropping anything absent. */
+/** Joins class names, dropping the ones that are absent. */
 function classNames(...values: Array<string | false | null | undefined>): string {
   return values.filter((value): value is string => Boolean(value)).join(' ');
 }
 
-/** Visual weight of a {@link Button}. */
 export type ButtonVariant = 'primary' | 'ghost';
 
-/** Props accepted by {@link Button}. */
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  /** Visual weight. Defaults to `primary`. */
+export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'type'> {
+  /** Visual weight. 'ghost' is the quiet one used inside banners. */
   variant?: ButtonVariant;
+  /**
+   * Always spelled out. A `<button>` with no type submits the form it happens
+   * to sit in, which is never what a retry control means.
+   */
+  type?: 'button' | 'submit' | 'reset';
 }
 
-/**
- * A button.
- *
- * `type` defaults to `button`: inside a form the browser's default of `submit`
- * turns an ordinary action into a page reload.
- */
+/** The one button. */
 export function Button({
   variant = 'primary',
   type = 'button',
@@ -44,7 +46,6 @@ export function Button({
 }: ButtonProps): ReactElement {
   return (
     <button
-      // eslint-disable-next-line react/button-has-type
       type={type}
       className={classNames('ds-button', variant === 'ghost' && 'ds-button--ghost', className)}
       {...rest}
@@ -54,34 +55,24 @@ export function Button({
   );
 }
 
-/** Props accepted by {@link Field}. */
 export interface FieldProps {
-  /** Id of the control this field labels. The control must carry the same id. */
-  id: string;
-  /** Visible label text. */
+  /** The id of the control this field labels; the label points at it. */
+  controlId: string;
   label: string;
-  /** Optional hint rendered beneath the control. */
   hint?: string;
-  /** The control itself. */
   children: ReactNode;
 }
 
-/**
- * A labelled form control.
- *
- * The label is associated with the control through `htmlFor`/`id` rather than
- * by wrapping, so clicking the label focuses the control and assistive
- * technology reads a name for it.
- */
-export function Field({ id, label, hint, children }: FieldProps): ReactElement {
+/** A label bound to its control by id, plus an optional hint. */
+export function Field({ controlId, label, hint, children }: FieldProps): ReactElement {
   return (
     <div className="ds-field">
-      <label className="ds-label" htmlFor={id}>
+      <label className="ds-label" htmlFor={controlId}>
         {label}
       </label>
       {children}
-      {hint !== undefined && hint !== '' ? (
-        <p className="ds-field__hint" id={`${id}-hint`}>
+      {hint ? (
+        <p className="ds-field__hint" id={`${controlId}-hint`}>
           {hint}
         </p>
       ) : null}
@@ -89,14 +80,12 @@ export function Field({ id, label, hint, children }: FieldProps): ReactElement {
   );
 }
 
-/** Props accepted by {@link Select}. */
 export type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
 
 /**
- * A native `<select>`.
- *
- * Deliberately native: a div-based menu has to re-implement focus, typeahead
- * and arrow-key movement, and usually re-implements only some of it.
+ * A native select, deliberately. The browser already makes it reachable by
+ * keyboard and announced by a screen reader; a div dressed as a dropdown would
+ * have to re-earn both.
  */
 export function Select({ className, children, ...rest }: SelectProps): ReactElement {
   return (
@@ -106,87 +95,65 @@ export function Select({ className, children, ...rest }: SelectProps): ReactElem
   );
 }
 
-/** Tone of a {@link Banner}. */
 export type BannerVariant = 'info' | 'error';
 
-/** Props accepted by {@link Banner}. */
 export interface BannerProps {
-  /** Tone. Defaults to `info`. */
   variant?: BannerVariant;
-  /** Optional heading line. */
   title?: string;
-  /** Body content, including any action buttons. */
-  children?: ReactNode;
+  /** Controls shown beside the message, such as a retry button. */
+  actions?: ReactNode;
+  children: ReactNode;
 }
 
-/**
- * A message about the page as a whole.
- *
- * The error variant is announced (`role="alert"`); the informational variant is
- * not, so a prompt that is simply part of the page does not interrupt whatever
- * a screen-reader user is doing.
- */
-export function Banner({ variant = 'info', title, children }: BannerProps): ReactElement {
+/** A short message about the state of the page, optionally with actions. */
+export function Banner({
+  variant = 'info',
+  title,
+  actions,
+  children,
+}: BannerProps): ReactElement {
   return (
     <div
-      className={classNames('ds-banner', variant === 'error' && 'ds-banner--error')}
-      role={variant === 'error' ? 'alert' : undefined}
+      className={classNames('ds-banner', variant === 'error' ? 'ds-banner--error' : 'ds-banner--info')}
+      role={variant === 'error' ? 'alert' : 'status'}
     >
-      {title !== undefined && title !== '' ? <p className="ds-banner__title">{title}</p> : null}
-      {children !== undefined && children !== null ? (
-        <div className="ds-banner__body">{children}</div>
-      ) : null}
+      <div className="ds-banner__body">
+        {title ? <p className="ds-banner__title">{title}</p> : null}
+        <p className="ds-banner__message">{children}</p>
+      </div>
+      {actions ? <div className="ds-banner__actions">{actions}</div> : null}
     </div>
   );
 }
 
-/** Props accepted by {@link Spinner}. */
 export interface SpinnerProps {
-  /** Text announced while the spinner is shown. Defaults to `Loading`. */
+  /** Announced to assistive technology; visually hidden. */
   label?: string;
 }
 
-/**
- * A busy indicator.
- *
- * Carries `role="status"` with visually hidden text, because a spinning shape
- * with no accessible name tells a screen-reader user nothing at all.
- */
+/** The in-flight indicator. Silence is indistinguishable from emptiness. */
 export function Spinner({ label = 'Loading' }: SpinnerProps): ReactElement {
   return (
     <span className="ds-spinner" role="status">
-      <span className="ds-spinner__indicator" aria-hidden="true" />
+      <span className="ds-spinner__dot" aria-hidden="true" />
       <span className="ds-visually-hidden">{label}</span>
     </span>
   );
 }
 
-/** Props accepted by {@link EmptyState}. */
 export interface EmptyStateProps {
-  /** Short statement of what is missing. */
   title: string;
-  /** Optional explanation of why, or what to do next. */
   description?: string;
-  /** Optional actions. */
-  children?: ReactNode;
+  actions?: ReactNode;
 }
 
-/**
- * The "there is nothing here" state.
- *
- * Distinct from loading and from failure on purpose: an empty list rendered as
- * a blank area is indistinguishable from a broken one.
- */
-export function EmptyState({ title, description, children }: EmptyStateProps): ReactElement {
+/** Says that there is nothing, which is not the same as saying nothing. */
+export function EmptyState({ title, description, actions }: EmptyStateProps): ReactElement {
   return (
     <div className="ds-empty">
       <p className="ds-empty__title">{title}</p>
-      {description !== undefined && description !== '' ? (
-        <p className="ds-empty__description">{description}</p>
-      ) : null}
-      {children !== undefined && children !== null ? (
-        <div className="ds-empty__actions">{children}</div>
-      ) : null}
+      {description ? <p className="ds-empty__body">{description}</p> : null}
+      {actions ? <div className="ds-empty__actions">{actions}</div> : null}
     </div>
   );
 }
