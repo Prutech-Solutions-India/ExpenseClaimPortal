@@ -1,67 +1,84 @@
-import { useState } from 'react';
-
-import { ApiError, createGreeting } from '../lib/api';
-import { buildInfo } from '../lib/build-info';
-
 /**
- * The seed the delivery pipeline builds on, and a worked example of the one
- * thing this stack exists to prove: a screen that calls its own API.
+ * The landing page.
+ *
+ * It shows who the *server* says the browser is acting as. The value comes
+ * from `/api/me` by way of the identity context, never from the selection the
+ * switcher holds: the header is only what the browser asserted, and the role
+ * that matters is the one the server resolved from the employee row.
+ *
+ * All four states the panel can be in - nothing selected, resolving, refused
+ * and resolved - are rendered from the design-system primitives, so a blank
+ * area never has to stand in for any of them.
  */
-export default function Home() {
-  const info = buildInfo();
-  const [name, setName] = useState('');
-  const [greeting, setGreeting] = useState('');
-  const [error, setError] = useState('');
-  const [pending, setPending] = useState(false);
 
-  async function onSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    setPending(true);
-    setGreeting('');
-    setError('');
-    try {
-      const result = await createGreeting(name);
-      setGreeting(result.greeting);
-    } catch (cause) {
-      // A failed call has to be visible on the page. Logging it to the console
-      // and rendering nothing is indistinguishable from the request never
-      // having been made.
-      setError(cause instanceof ApiError ? cause.message : 'The service could not be reached.');
-    } finally {
-      setPending(false);
-    }
-  }
+import type { ReactElement } from 'react';
+
+import { buildInfo } from '@/lib/build-info';
+import { formatRole } from '@/lib/format';
+import { useIdentity } from '@/lib/identity';
+import { Banner, Spinner } from '@/lib/ui';
+
+/** Shown where a value is absent rather than merely unknown. */
+const NONE = 'None';
+
+/** Renders the identity panel and the build stamp. */
+export default function Home(): ReactElement {
+  const { employees, actingId, me, meError } = useIdentity();
+  const info = buildInfo();
+
+  const manager =
+    me !== null && me.managerId !== null
+      ? employees.find((employee) => employee.id === me.managerId)
+      : undefined;
 
   return (
-    <section>
-      <h1>Pilot service</h1>
-      <p>
-        This page is the seed the delivery pipeline builds on. Replace it with the
-        first story&apos;s work.
-      </p>
+    <section className="page">
+      <h1 className="page__title">Expense claim portal</h1>
 
-      <form onSubmit={onSubmit}>
-        <label htmlFor="name">Your name</label>
-        <input
-          id="name"
-          name="name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <button type="submit" disabled={pending}>
-          {pending ? 'Sending...' : 'Send'}
-        </button>
-      </form>
+      {actingId === null ? (
+        <Banner title="No acting identity selected">
+          <p>
+            Choose an employee from the <strong>Acting as</strong> control in the header. Every
+            request then carries that identity, and the server resolves the role it is allowed to
+            use.
+          </p>
+        </Banner>
+      ) : null}
 
-      {greeting !== '' && <p role="status">{greeting}</p>}
-      {error !== '' && <p role="alert">{error}</p>}
+      {actingId !== null && meError !== null ? (
+        <Banner variant="error" title="The server refused this identity">
+          <p>{meError}</p>
+        </Banner>
+      ) : null}
 
-      <dl>
-        <dt>Version</dt>
-        <dd>{info.version}</dd>
-        <dt>Commit</dt>
-        <dd>{info.commit}</dd>
-      </dl>
+      {actingId !== null && me === null && meError === null ? (
+        <Spinner label="Resolving identity" />
+      ) : null}
+
+      {me !== null ? (
+        <div className="page__panel">
+          <h2 className="page__subtitle">Resolved on the server</h2>
+          <dl className="page__facts">
+            <dt>Name</dt>
+            <dd>{me.displayName}</dd>
+            <dt>Email</dt>
+            <dd>{me.email}</dd>
+            <dt>Role</dt>
+            <dd>{formatRole(me.role)}</dd>
+            <dt>Manager</dt>
+            <dd>{manager !== undefined ? manager.displayName : NONE}</dd>
+          </dl>
+        </div>
+      ) : null}
+
+      <footer className="page__footer">
+        <dl className="page__facts">
+          <dt>Version</dt>
+          <dd>{info.version}</dd>
+          <dt>Commit</dt>
+          <dd>{info.commit}</dd>
+        </dl>
+      </footer>
     </section>
   );
 }
