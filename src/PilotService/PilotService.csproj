@@ -18,4 +18,9 @@
     </PackageReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="react-router-dom" Version="7.18.4" />
+    <PackageReference Include="vitest" Version="4.1.11" />
+  </ItemGroup>
+
 </Project>
